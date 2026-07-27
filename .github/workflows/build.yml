@@ -23,12 +23,21 @@ concurrency:
   group: build
   cancel-in-progress: false
 
-env:
-  IMAGE: ghcr.io/${{ github.repository }}
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # plain image: consumed by litellm-lagoon (Lagoon/docker-compose)
+          - upstream: litellm
+            package: litellm-lagoon-base
+          # -database image: consumed by the litellm helm chart (k0rdent)
+          - upstream: litellm-database
+            package: litellm-lagoon-base-database
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.package }}
     steps:
       - uses: actions/checkout@v4
 
@@ -73,6 +82,7 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           build-args: |
+            LITELLM_IMAGE=ghcr.io/berriai/${{ matrix.upstream }}
             LITELLM_VERSION=${{ steps.version.outputs.version }}
           tags: |
             ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
@@ -81,8 +91,12 @@ jobs:
       - name: Notify Slack on failure
         if: failure()
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
+          TEXT: ":rotating_light: ${{ matrix.package }} build failed for LiteLLM ${{ steps.version.outputs.version || 'unknown' }} — the patch may no longer apply. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         run: |
-          curl -fsS -X POST -H 'Content-type: application/json' --data \
-            "{\"text\":\":rotating_light: litellm-lagoon-base build failed for LiteLLM ${{ steps.version.outputs.version || 'unknown' }} — the patch may no longer apply. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
-            "$SLACK_WEBHOOK_URL"
+          curl -fsS -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+            -H 'Content-type: application/json; charset=utf-8' \
+            --data "$(jq -n --arg c "$SLACK_CHANNEL_ID" --arg t "$TEXT" '{channel:$c,text:$t}')" \
+            | jq -e '.ok'

@@ -1,5 +1,9 @@
+# LITELLM_IMAGE: ghcr.io/berriai/litellm (Lagoon/docker-compose) or
+# ghcr.io/berriai/litellm-database (helm chart default). Both are alpine,
+# run as root, and ship litellm in site-packages, so patching is identical.
+ARG LITELLM_IMAGE=ghcr.io/berriai/litellm
 ARG LITELLM_VERSION=v1.93.0
-FROM ghcr.io/berriai/litellm:${LITELLM_VERSION}
+FROM ${LITELLM_IMAGE}:${LITELLM_VERSION}
 
 # Apply patch/*.patch onto the installed litellm package. Only litellm/*
 # paths are applied — tests/ and ui/ sources in a patch are skipped (the

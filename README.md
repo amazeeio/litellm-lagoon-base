@@ -1,26 +1,31 @@
 # litellm-lagoon-base
 
 Republishes the upstream [LiteLLM](https://github.com/BerriAI/litellm) proxy
-image with our pending upstream patches applied — nothing else. Consumed by
-[litellm-lagoon](https://github.com/amazeeio/litellm-lagoon) as its base image.
+images with our pending upstream patches applied — nothing else. With an empty
+`patch/` dir the output is a 1-to-1 copy of upstream.
 
-Images: `ghcr.io/amazeeio/litellm-lagoon-base:<litellm-version>` (e.g.
-`v1.93.0`) plus `latest`. With an empty `patch/` dir the output is a 1-to-1
-copy of `ghcr.io/berriai/litellm:<version>`.
+Two packages, mirroring the upstream image variants, tagged with the upstream
+release (e.g. `v1.93.0`) plus `latest`:
+
+| Package | Upstream base | Consumed by |
+| --- | --- | --- |
+| `ghcr.io/amazeeio/litellm-lagoon-base` | `ghcr.io/berriai/litellm` | [litellm-lagoon](https://github.com/amazeeio/litellm-lagoon) (Lagoon / docker-compose) |
+| `ghcr.io/amazeeio/litellm-lagoon-base-database` | `ghcr.io/berriai/litellm-database` | litellm helm chart in [amazeeai-k0rdent-catalog](https://github.com/amazeeio/amazeeai-k0rdent-catalog) |
 
 ## How it works
 
-- `Dockerfile` starts `FROM ghcr.io/berriai/litellm:${LITELLM_VERSION}` and
-  applies every `patch/*.patch` onto the installed `litellm` site-package with
+- `Dockerfile` starts `FROM ${LITELLM_IMAGE}:${LITELLM_VERSION}` and applies
+  every `patch/*.patch` onto the installed `litellm` site-package with
   `git apply --include='litellm/*'` (tests/UI-source paths in a patch are
-  skipped — the image ships prebuilt UI assets).
+  skipped — the images ship prebuilt UI assets).
 - `.github/workflows/build.yml` runs every 6 hours, resolves the latest
-  **stable** (non-prerelease) LiteLLM release, and builds/pushes it if not
-  already published. Pushes to `main` touching `Dockerfile` or `patch/`
+  **stable** (non-prerelease) LiteLLM release, and builds/pushes both variants
+  if not already published. Pushes to `main` touching `Dockerfile` or `patch/`
   republish the current version. `workflow_dispatch` accepts an explicit
   version.
-- If the build fails (usually: patch no longer applies to a new release),
-  a message is posted to Slack via the `SLACK_WEBHOOK_URL` repo secret.
+- If a build fails (usually: patch no longer applies to a new release), a
+  message is posted to Slack — and re-posted every 6 hours until the patch is
+  fixed.
 
 ## Current patches
 
@@ -42,12 +47,26 @@ git diff > <this-repo>/patch/0001-litellm-pr31618-budget-threshold-webhook-alert
 ## When the PR merges upstream
 
 Delete `patch/*.patch` (keep `patch/.gitkeep`) and push. Builds continue and
-publish unpatched 1-to-1 copies of upstream — `litellm-lagoon` keeps working
-unchanged.
+publish unpatched 1-to-1 copies of upstream — consumers keep working unchanged.
+
+## Consuming the internal packages
+
+The packages stay **internal**, so every pull needs auth against ghcr.io with
+`read:packages`:
+
+- **Lagoon builds** (litellm-lagoon): `.lagoon.yml` declares a
+  `container-registries` entry for ghcr.io; create the referenced Lagoon
+  variables (`GHCR_USERNAME`, `GHCR_PULL_TOKEN` — a fine-grained PAT or classic
+  PAT with `read:packages`) on each project:
+  `lagoon add variable -p <project> -N GHCR_PULL_TOKEN -V <token> -S container_registry`
+- **Kubernetes / k0rdent**: create a `kubernetes.io/dockerconfigjson` pull
+  secret for ghcr.io in the target namespace and reference it via the chart's
+  `litellm-helm.imagePullSecrets`.
+- **Local dev**: `docker login ghcr.io` with your GitHub username + PAT.
 
 ## One-time setup
 
-- Repo secret `SLACK_WEBHOOK_URL` — incoming-webhook URL for the alerts channel.
-- After the first push to GHCR, set the `litellm-lagoon-base` package
-  visibility to **public** (org packages default to private; Lagoon builds
-  pull this image unauthenticated).
+- Grant the org-level `SLACK_BOT_TOKEN` secret access to this repo (org
+  settings → secrets → repository access), and set the `SLACK_CHANNEL_ID`
+  **repository variable** to the alerts channel ID. The Slack app must be a
+  member of that channel.
