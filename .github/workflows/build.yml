@@ -18,6 +18,7 @@ on:
 permissions:
   contents: read
   packages: write
+  actions: read # notify job reads previous run conclusions
 
 concurrency:
   group: build

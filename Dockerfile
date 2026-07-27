@@ -18,9 +18,9 @@ FROM ${LITELLM_IMAGE}:${LITELLM_VERSION}
 #    without the enterprise code and with the patches applied.
 COPY patch/ /tmp/patch/
 RUN set -e; \
-    pip uninstall -y litellm-enterprise; \
-    rm -rf /app/enterprise; \
     cd "$(python -c 'import site; print(site.getsitepackages()[0])')"; \
+    rm -rf /app/enterprise litellm_enterprise litellm_enterprise-*.dist-info; \
+    python -c 'import importlib.util; assert importlib.util.find_spec("litellm_enterprise") is None, "litellm_enterprise still importable"'; \
     if ls /tmp/patch/*.patch >/dev/null 2>&1; then \
         apk add --no-cache git; \
         for p in /tmp/patch/*.patch; do \
