@@ -1,8 +1,12 @@
 # litellm-lagoon-base
 
 Republishes the upstream [LiteLLM](https://github.com/BerriAI/litellm) proxy
-images with our pending upstream patches applied — nothing else. With an empty
-`patch/` dir the output is a 1-to-1 copy of upstream.
+images with our pending upstream patches applied and the proprietary
+`enterprise/` code removed — nothing else. LiteLLM is MIT-licensed **except**
+the enterprise components, whose license forbids redistribution without a
+BerriAI subscription, so the published images contain MIT-licensed code only.
+With an empty `patch/` dir the output is a 1-to-1 copy of upstream minus
+those enterprise components.
 
 Two packages, mirroring the upstream image variants, tagged with the upstream
 release (e.g. `v1.93.0`) plus `latest`:
@@ -14,10 +18,14 @@ release (e.g. `v1.93.0`) plus `latest`:
 
 ## How it works
 
-- `Dockerfile` starts `FROM ${LITELLM_IMAGE}:${LITELLM_VERSION}` and applies
+- `Dockerfile` starts `FROM ${LITELLM_IMAGE}:${LITELLM_VERSION}`, removes the
+  enterprise code (`litellm-enterprise` package + `/app/enterprise` — all
+  litellm imports of it are ImportError-guarded and features are dormant
+  without `LITELLM_LICENSE`, so nothing functional is lost), and applies
   every `patch/*.patch` onto the installed `litellm` site-package with
   `git apply --include='litellm/*'` (tests/UI-source paths in a patch are
-  skipped — the images ship prebuilt UI assets).
+  skipped — the images ship prebuilt UI assets). A final
+  `import litellm.proxy.proxy_server` smoke-checks the result.
 - `.github/workflows/build.yml` runs once a day, resolves the latest
   **stable** (non-prerelease) LiteLLM release, and builds/pushes both variants
   if not already published. Pushes to `main` touching `Dockerfile` or `patch/`
@@ -47,7 +55,8 @@ git diff > <this-repo>/patch/0001-litellm-pr31618-budget-threshold-webhook-alert
 ## When the PR merges upstream
 
 Delete `patch/*.patch` (keep `patch/.gitkeep`) and push. Builds continue and
-publish unpatched 1-to-1 copies of upstream — consumers keep working unchanged.
+publish unpatched copies of upstream (still enterprise-stripped) — consumers
+keep working unchanged.
 
 ## Consuming the internal packages
 
