@@ -1,0 +1,88 @@
+name: build
+
+on:
+  schedule:
+    - cron: "23 */6 * * *" # pick up new upstream stable releases
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - patch/**
+      - .github/workflows/build.yml
+  workflow_dispatch:
+    inputs:
+      litellm_version:
+        description: "LiteLLM release tag (e.g. v1.93.0). Empty = latest stable release."
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve LiteLLM version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION='${{ inputs.litellm_version }}'
+          if [ -z "$VERSION" ]; then
+            VERSION="$(gh api repos/BerriAI/litellm/releases --jq '[.[] | select(.prerelease | not)][0].tag_name')"
+          fi
+          [ -n "$VERSION" ] || { echo "could not resolve a LiteLLM version"; exit 1; }
+          echo "version=$VERSION" | tee -a "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # On scheduled runs, skip versions we already published. Pushes to
+      # main (patch/Dockerfile changes) always republish the current version.
+      - name: Check if already published
+        id: published
+        if: github.event_name == 'schedule'
+        run: |
+          if docker manifest inspect "$IMAGE:${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" | tee -a "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-qemu-action@v3
+        if: steps.published.outputs.exists != 'true'
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.published.outputs.exists != 'true'
+
+      - uses: docker/build-push-action@v6
+        if: steps.published.outputs.exists != 'true'
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            LITELLM_VERSION=${{ steps.version.outputs.version }}
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+            ${{ env.IMAGE }}:latest
+
+      - name: Notify Slack on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -fsS -X POST -H 'Content-type: application/json' --data \
+            "{\"text\":\":rotating_light: litellm-lagoon-base build failed for LiteLLM ${{ steps.version.outputs.version || 'unknown' }} — the patch may no longer apply. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+            "$SLACK_WEBHOOK_URL"
