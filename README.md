@@ -18,14 +18,14 @@ release (e.g. `v1.93.0`) plus `latest`:
   every `patch/*.patch` onto the installed `litellm` site-package with
   `git apply --include='litellm/*'` (tests/UI-source paths in a patch are
   skipped — the images ship prebuilt UI assets).
-- `.github/workflows/build.yml` runs every 6 hours, resolves the latest
+- `.github/workflows/build.yml` runs once a day, resolves the latest
   **stable** (non-prerelease) LiteLLM release, and builds/pushes both variants
   if not already published. Pushes to `main` touching `Dockerfile` or `patch/`
   republish the current version. `workflow_dispatch` accepts an explicit
   version.
 - If a build fails (usually: patch no longer applies to a new release), a
-  message is posted to Slack — and re-posted every 6 hours until the patch is
-  fixed.
+  single message is posted to Slack — repeat failures stay quiet until a run
+  succeeds again.
 
 ## Current patches
 

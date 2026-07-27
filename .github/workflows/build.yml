@@ -2,7 +2,7 @@ name: build
 
 on:
   schedule:
-    - cron: "23 */6 * * *" # pick up new upstream stable releases
+    - cron: "23 5 * * *" # daily: pick up new upstream stable releases
   push:
     branches: [main]
     paths:
@@ -26,6 +26,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     strategy:
       fail-fast: false
       matrix:
@@ -88,12 +90,27 @@ jobs:
             ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
             ${{ env.IMAGE }}:latest
 
-      - name: Notify Slack on failure
-        if: failure()
+  # One Slack message per breakage, not per matrix leg or per scheduled
+  # retry: skip posting when the previous completed run also failed.
+  notify:
+    runs-on: ubuntu-latest
+    needs: build
+    if: failure()
+    steps:
+      - name: Check previous run conclusion
+        id: prev
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PREV="$(gh api "repos/${{ github.repository }}/actions/workflows/build.yml/runs?status=completed&per_page=1" --jq '.workflow_runs[0].conclusion')"
+          echo "conclusion=$PREV" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Post to Slack
+        if: steps.prev.outputs.conclusion != 'failure'
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
-          TEXT: ":rotating_light: ${{ matrix.package }} build failed for LiteLLM ${{ steps.version.outputs.version || 'unknown' }} — the patch may no longer apply. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TEXT: ":rotating_light: litellm-lagoon-base build failed for LiteLLM ${{ needs.build.outputs.version || 'unknown' }} — the patch may no longer apply. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         run: |
           curl -fsS -X POST https://slack.com/api/chat.postMessage \
             -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
