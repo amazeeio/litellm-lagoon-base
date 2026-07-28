@@ -41,6 +41,13 @@ jobs:
             package: litellm-lagoon-base-database
     env:
       IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.package }}
+      # The docker build pushes here first. Its result still DISTRIBUTES the
+      # enterprise code: `rm -rf` in the Dockerfile only masks files in the
+      # top layer, the inherited upstream layers keep the content. The
+      # publish step crane-flattens staging into a single layer at $IMAGE,
+      # so only the post-rm filesystem is ever public. The -staging packages
+      # must therefore STAY PRIVATE.
+      STAGING: ghcr.io/${{ github.repository_owner }}/${{ matrix.package }}-staging
     steps:
       - uses: actions/checkout@v4
 
@@ -96,9 +103,10 @@ jobs:
           build-args: |
             LITELLM_IMAGE=ghcr.io/berriai/${{ matrix.upstream }}
             LITELLM_VERSION=${{ steps.version.outputs.version }}
+          # No provenance attestations: crane flatten drops them anyway.
+          provenance: false
           tags: |
-            ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
-            ${{ env.IMAGE }}:latest
+            ${{ env.STAGING }}:${{ steps.version.outputs.version }}
           # GHCR reads the description from the image index annotation on
           # multi-arch images; the label covers single-manifest consumers.
           labels: |
@@ -107,6 +115,19 @@ jobs:
           annotations: |
             index:org.opencontainers.image.description=${{ steps.patches.outputs.description }}
             index:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - uses: imjasonh/setup-crane@v0.4
+        if: steps.published.outputs.exists != 'true'
+
+      # Squash to a single layer per arch so the upstream layers containing
+      # the enterprise code are not part of the public image. Flatten
+      # preserves the image config (env, entrypoint, labels) and the index
+      # annotations; crane reuses the docker login from above.
+      - name: Flatten into public image
+        if: steps.published.outputs.exists != 'true'
+        run: |
+          crane flatten "$STAGING:${{ steps.version.outputs.version }}" -t "$IMAGE:${{ steps.version.outputs.version }}"
+          crane tag "$IMAGE:${{ steps.version.outputs.version }}" latest
 
   # One Slack message per breakage, not per matrix leg or per scheduled
   # retry: skip posting when the previous completed run also failed.
