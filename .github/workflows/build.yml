@@ -72,6 +72,15 @@ jobs:
             echo "exists=true" | tee -a "$GITHUB_OUTPUT"
           fi
 
+      # GHCR shows org.opencontainers.image.description as the package
+      # description; build it from the patch filenames so the package page
+      # lists what was applied.
+      - name: Describe patches
+        id: patches
+        run: |
+          PATCHES="$(ls patch/*.patch 2>/dev/null | xargs -rn1 basename | sed 's/\.patch$//' | paste -sd, -)"
+          echo "description=LiteLLM ${{ steps.version.outputs.version }}, enterprise code stripped, patches: ${PATCHES:-none}" | tee -a "$GITHUB_OUTPUT"
+
       - uses: docker/setup-qemu-action@v3
         if: steps.published.outputs.exists != 'true'
 
@@ -90,6 +99,14 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
             ${{ env.IMAGE }}:latest
+          # GHCR reads the description from the image index annotation on
+          # multi-arch images; the label covers single-manifest consumers.
+          labels: |
+            org.opencontainers.image.description=${{ steps.patches.outputs.description }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          annotations: |
+            index:org.opencontainers.image.description=${{ steps.patches.outputs.description }}
+            index:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
   # One Slack message per breakage, not per matrix leg or per scheduled
   # retry: skip posting when the previous completed run also failed.
