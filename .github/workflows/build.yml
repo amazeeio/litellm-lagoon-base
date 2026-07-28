@@ -39,15 +39,21 @@ jobs:
           # -database image: consumed by the litellm helm chart (k0rdent)
           - upstream: litellm-database
             package: litellm-lagoon-base-database
+    # The docker build pushes to this job-local registry first. Its result
+    # still DISTRIBUTES the enterprise code: `rm -rf` in the Dockerfile only
+    # masks files in the top layer, the inherited upstream layers keep the
+    # content. The publish step crane-flattens it into a single layer at
+    # $IMAGE, so only the post-rm filesystem ever leaves the runner. (A
+    # GHCR staging package won't do: packages created from a public repo's
+    # workflow are born public.)
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
     env:
       IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.package }}
-      # The docker build pushes here first. Its result still DISTRIBUTES the
-      # enterprise code: `rm -rf` in the Dockerfile only masks files in the
-      # top layer, the inherited upstream layers keep the content. The
-      # publish step crane-flattens staging into a single layer at $IMAGE,
-      # so only the post-rm filesystem is ever public. The -staging packages
-      # must therefore STAY PRIVATE.
-      STAGING: ghcr.io/${{ github.repository_owner }}/${{ matrix.package }}-staging
+      STAGING: localhost:5000/${{ matrix.package }}
     steps:
       - uses: actions/checkout@v4
 
@@ -93,6 +99,9 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
         if: steps.published.outputs.exists != 'true'
+        with:
+          # Let the buildkit container reach the job-local registry service.
+          driver-opts: network=host
 
       - uses: docker/build-push-action@v6
         if: steps.published.outputs.exists != 'true'
