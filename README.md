@@ -9,7 +9,7 @@ With an empty `patch/` dir the output is a 1-to-1 copy of upstream minus
 those enterprise components.
 
 Two packages, mirroring the upstream image variants, tagged with the upstream
-release (e.g. `v1.93.0`) plus `latest`:
+release (e.g. `v1.94.0`) plus `latest`:
 
 | Package | Upstream base | Consumed by |
 | --- | --- | --- |
@@ -37,26 +37,22 @@ release (e.g. `v1.93.0`) plus `latest`:
 
 ## Current patches
 
-- `0001-litellm-pr31618-budget-threshold-webhook-alerts.patch` —
-  [BerriAI/litellm#31618](https://github.com/BerriAI/litellm/pull/31618),
-  rebased onto v1.93.0 (the raw PR diff is based on newer `main` and does not
-  apply to the stable tag as-is).
+None. `0001-litellm-pr31618-budget-threshold-webhook-alerts.patch`
+([BerriAI/litellm#31618](https://github.com/BerriAI/litellm/pull/31618)) was
+dropped when it stopped applying to v1.94.0 — restore it from git history and
+re-rebase (recipe below) if it's needed again before the PR merges upstream.
+With an empty `patch/` dir the builds publish unpatched copies of upstream
+(still enterprise-stripped).
 
-## Refreshing a patch after upstream drift
+## Adding or refreshing a patch
 
 ```sh
 git clone --depth 1 --branch <version> --filter=blob:none --sparse https://github.com/BerriAI/litellm /tmp/litellm
 cd /tmp/litellm && git sparse-checkout set litellm
-gh pr diff 31618 --repo BerriAI/litellm > /tmp/pr.diff
+gh pr diff <pr-number> --repo BerriAI/litellm > /tmp/pr.diff
 git apply --include='litellm/*' /tmp/pr.diff   # fix rejects by hand if any
-git diff > <this-repo>/patch/0001-litellm-pr31618-budget-threshold-webhook-alerts.patch
+git diff > <this-repo>/patch/0001-<short-name>.patch
 ```
-
-## When the PR merges upstream
-
-Delete `patch/*.patch` (keep `patch/.gitkeep`) and push. Builds continue and
-publish unpatched copies of upstream (still enterprise-stripped) — consumers
-keep working unchanged.
 
 ## Consuming the internal packages
 
