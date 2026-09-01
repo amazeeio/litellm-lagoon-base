@@ -2,7 +2,7 @@
 # ghcr.io/berriai/litellm-database (helm chart default). Both are alpine,
 # run as root, and ship litellm in site-packages, so patching is identical.
 ARG LITELLM_IMAGE=ghcr.io/berriai/litellm
-ARG LITELLM_VERSION=v1.98.0
+ARG LITELLM_VERSION=v1.99.0
 FROM ${LITELLM_IMAGE}:${LITELLM_VERSION}
 
 # 1. Strip the proprietary enterprise code (enterprise/LICENSE.md forbids
