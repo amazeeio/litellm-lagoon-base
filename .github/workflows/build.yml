@@ -14,6 +14,9 @@ on:
       litellm_version:
         description: "LiteLLM release tag (e.g. v1.93.0). Empty = latest stable release."
         required: false
+      tag_suffix:
+        description: "Appended to the published tag (e.g. -pr34440). Use when dispatching from a branch to test a patch without republishing the release tag or moving latest."
+        required: false
 
 permissions:
   contents: read
@@ -68,6 +71,7 @@ jobs:
           fi
           [ -n "$VERSION" ] || { echo "could not resolve a LiteLLM version"; exit 1; }
           echo "version=$VERSION" | tee -a "$GITHUB_OUTPUT"
+          echo "tag=${VERSION}${{ inputs.tag_suffix }}" | tee -a "$GITHUB_OUTPUT"
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -94,10 +98,10 @@ jobs:
           PATCHES="$(ls patch/*.patch 2>/dev/null | xargs -rn1 basename | sed 's/\.patch$//' | paste -sd, -)"
           echo "description=LiteLLM ${{ steps.version.outputs.version }}, enterprise code stripped, patches: ${PATCHES:-none}" | tee -a "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
         if: steps.published.outputs.exists != 'true'
 
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
         if: steps.published.outputs.exists != 'true'
         with:
           # Let the buildkit container reach the job-local registry service.
@@ -135,8 +139,11 @@ jobs:
       - name: Flatten into public image
         if: steps.published.outputs.exists != 'true'
         run: |
-          crane flatten "$STAGING:${{ steps.version.outputs.version }}" -t "$IMAGE:${{ steps.version.outputs.version }}"
-          crane tag "$IMAGE:${{ steps.version.outputs.version }}" latest
+          crane flatten "$STAGING:${{ steps.version.outputs.version }}" -t "$IMAGE:${{ steps.version.outputs.tag }}"
+          # Suffixed test tags never move `latest`.
+          if [ -z '${{ inputs.tag_suffix }}' ]; then
+            crane tag "$IMAGE:${{ steps.version.outputs.tag }}" latest
+          fi
 
   # Keep the Dockerfile's ARG default in sync with the version just
   # published, purely for readability — CI always overrides it via
@@ -146,6 +153,8 @@ jobs:
   sync-dockerfile:
     runs-on: ubuntu-latest
     needs: build
+    # Suffixed test builds don't move the default version.
+    if: inputs.tag_suffix == ''
     permissions:
       contents: write
     steps:
