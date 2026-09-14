@@ -181,7 +181,7 @@ jobs:
       - name: Post to Slack
         if: steps.prev.outputs.conclusion != 'failure'
         env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.AMAZEE_AI_SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
           TEXT: ":rotating_light: litellm-lagoon-base build failed for LiteLLM ${{ needs.build.outputs.version || 'unknown' }} — the patch may no longer apply. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         run: |
