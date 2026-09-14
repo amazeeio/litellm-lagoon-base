@@ -71,7 +71,7 @@ The packages stay **internal**, so every pull needs auth against ghcr.io with
 
 ## One-time setup
 
-- Grant the org-level `SLACK_BOT_TOKEN` secret access to this repo (org
+- Grant the org-level `AMAZEE_AI_SLACK_BOT_TOKEN` secret access to this repo (org
   settings → secrets → repository access), and set the `SLACK_CHANNEL_ID`
   **repository variable** to the alerts channel ID. The Slack app must be a
   member of that channel.
