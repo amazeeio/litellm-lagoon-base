@@ -94,7 +94,7 @@ jobs:
           PATCHES="$(ls patch/*.patch 2>/dev/null | xargs -rn1 basename | sed 's/\.patch$//' | paste -sd, -)"
           echo "description=LiteLLM ${{ steps.version.outputs.version }}, enterprise code stripped, patches: ${PATCHES:-none}" | tee -a "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         if: steps.published.outputs.exists != 'true'
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
