@@ -1,3 +1,28 @@
+diff --git a/litellm/litellm_core_utils/realtime_streaming.py b/litellm/litellm_core_utils/realtime_streaming.py
+index d2fbb26bb020..5e0044765325 100644
+--- a/litellm/litellm_core_utils/realtime_streaming.py
++++ b/litellm/litellm_core_utils/realtime_streaming.py
+@@ -12,6 +12,7 @@ import litellm
+ from litellm._logging import redact_internal_details_from_client_message, verbose_logger
+ from litellm.constants import REALTIME_SESSION_FAILURE_LOGGED_KEY, REALTIME_SESSION_SUCCESS_LOGGED_KEY
+ from litellm.litellm_core_utils.logging_worker import GLOBAL_LOGGING_WORKER
++from litellm.llms.base_llm.realtime.transcription_protocol import RealtimeTranscriptionProtocolError
+ from litellm.llms.base_llm.realtime.transformation import BaseRealtimeConfig, RealtimeBackend
+ from litellm.types.llms.openai import (
+     OpenAIRealtimeEvents,
+@@ -1551,7 +1552,11 @@ class RealTimeStreaming:
+                 # would permanently disable the injection if ``_send_to_backend``
+                 # raised — neither this loop nor
+                 # ``_maybe_send_guardrail_turn_detection_update`` would retry.
+-                sent = await self._send_to_backend(message)
++                try:
++                    sent = await self._send_to_backend(message)
++                except RealtimeTranscriptionProtocolError as e:
++                    await self.websocket.send_text(realtime_error_event(str(e), error_type="invalid_request_error"))
++                    continue
+                 if guardrail_turn_detection_injected and sent:
+                     self._guardrail_turn_detection_update_sent = True
+ 
 diff --git a/litellm/llms/base_llm/realtime/transformation.py b/litellm/llms/base_llm/realtime/transformation.py
 index 1f4ad29fa748..60d0f723ee01 100644
 --- a/litellm/llms/base_llm/realtime/transformation.py
@@ -13,7 +38,7 @@ index 1f4ad29fa748..60d0f723ee01 100644
          self,
          model: str,
 diff --git a/litellm/llms/custom_httpx/llm_http_handler.py b/litellm/llms/custom_httpx/llm_http_handler.py
-index 86c36a7b413b..9b22d1347ae8 100644
+index 86c36a7b413b..ca82652b5da7 100644
 --- a/litellm/llms/custom_httpx/llm_http_handler.py
 +++ b/litellm/llms/custom_httpx/llm_http_handler.py
 @@ -6309,7 +6309,7 @@ class BaseLLMHTTPHandler:
@@ -25,18 +50,31 @@ index 86c36a7b413b..9b22d1347ae8 100644
                  provider_backend
                  if provider_backend is not None
                  else await self._open_realtime_backend_ws(websockets, url, headers, ssl_context)
+@@ -6347,9 +6347,9 @@ class BaseLLMHTTPHandler:
+                         await backend_ws.send(_session_config)
+                         realtime_streaming.session_configuration_request = _session_config
+ 
+-                # For providers that defer setup until client session.update, optionally
+-                # send synthetic session.created to unblock clients waiting on connect.
+-                if not provider_config.requires_session_configuration():
++                # When no setup went upstream, optionally send a synthetic
++                # session.created to unblock clients waiting on connect.
++                if not _session_config:
+                     synthetic_session: Final = provider_config.transform_session_created_event(
+                         model=model,
+                         logging_session_id=logging_obj.litellm_trace_id,
 diff --git a/litellm/llms/soniox/realtime/__init__.py b/litellm/llms/soniox/realtime/__init__.py
 new file mode 100644
 index 000000000000..e69de29bb2d1
 diff --git a/litellm/llms/soniox/realtime/transformation.py b/litellm/llms/soniox/realtime/transformation.py
 new file mode 100644
-index 000000000000..38648ad8c579
+index 000000000000..23c7cb54245f
 --- /dev/null
 +++ b/litellm/llms/soniox/realtime/transformation.py
-@@ -0,0 +1,379 @@
+@@ -0,0 +1,410 @@
 +import asyncio
 +import time
-+from collections.abc import Awaitable, Callable
++from collections.abc import Awaitable, Callable, Mapping
 +from types import MappingProxyType, TracebackType
 +from typing import Final
 +from urllib.parse import urlparse
@@ -74,6 +112,7 @@ index 000000000000..38648ad8c579
 +DEFAULT_SONIOX_REALTIME_URL: Final = "wss://stt-rt.soniox.com/transcribe-websocket"
 +DEFAULT_SAMPLE_RATE: Final = 24_000
 +KEEPALIVE_INTERVAL_SECONDS: Final = 5.0
++_MAX_PENDING_FRAMES: Final = 64
 +_FINALIZE: Final = '{"type":"finalize"}'
 +_KEEPALIVE: Final = '{"type":"keepalive"}'
 +_END_STREAM: Final = ""
@@ -172,6 +211,18 @@ index 000000000000..38648ad8c579
 +    return transcription_session_created_event(session)
 +
 +
++def _changes_started_stream(update: TranscriptionSessionUpdate, started: SonioxStartRequest) -> bool:
++    turn_detection_set: Final = update.turn_detection is not None or update.turn_detection_disabled
++    return (
++        (update.audio_format is not None and _sample_rate(update) != started.sample_rate)
++        or (
++            update.language is not None
++            and _language_hints(update.language, started.language_hints) != started.language_hints
++        )
++        or (turn_detection_set and update.turn_detection_disabled == started.enable_endpoint_detection)
++    )
++
++
 +def build_soniox_realtime_url(api_base: str | None) -> str:
 +    if api_base is None:
 +        return DEFAULT_SONIOX_REALTIME_URL
@@ -198,11 +249,12 @@ index 000000000000..38648ad8c579
 +        self._bill(response.total_audio_proc_ms)
 +        return tuple(event for token in response.tokens for event in self._token_events(token))
 +
-+    def take_unbilled_usage(self) -> RealtimeInputAudioTranscriptionUsage | None:
-+        unbilled_ms: Final = self._processed_ms - self._billed_ms
++    def take_unbilled_usage(self, stream_ms: int = 0) -> RealtimeInputAudioTranscriptionUsage | None:
++        billable_ms: Final = max(self._processed_ms, stream_ms)
++        unbilled_ms: Final = billable_ms - self._billed_ms
 +        if unbilled_ms <= 0:
 +            return None
-+        self._billed_ms = self._processed_ms
++        self._billed_ms = billable_ms
 +        return duration_usage(unbilled_ms / 1000)
 +
 +    def _bill(self, total_audio_proc_ms: int | None) -> None:
@@ -257,16 +309,15 @@ index 000000000000..38648ad8c579
 +        self._interval: Final = keepalive_interval
 +        self._clock: Final = clock
 +        self._sleep: Final = sleep
-+        self._local_frames: Final[asyncio.Queue[str]] = asyncio.Queue(maxsize=1)
++        self._frames: Final[asyncio.Queue[str | bytes | Exception]] = asyncio.Queue(maxsize=_MAX_PENDING_FRAMES)
 +        self._last_sent: float = clock()
 +        self._started: bool = False
 +        self._ended: bool = False
-+        self._keepalive_task: asyncio.Task[None] | None = None
-+        self._upstream_recv: asyncio.Task[str | bytes] | None = None
++        self._tasks: tuple[asyncio.Task[None], ...] = ()
 +
 +    async def __aenter__(self) -> Self:
 +        await self._inner.__aenter__()
-+        self._keepalive_task = asyncio.create_task(self._keepalive())
++        self._tasks = (asyncio.create_task(self._pump()), asyncio.create_task(self._keepalive()))
 +        return self
 +
 +    async def __aexit__(
@@ -284,27 +335,30 @@ index 000000000000..38648ad8c579
 +        await self._inner.send(message)
 +        if not self._started and isinstance(message, str) and message not in _CONTROL_FRAMES:
 +            self._started = True
-+            self._local_frames.put_nowait(SESSION_STARTED_FRAME)
++            await self._frames.put(SESSION_STARTED_FRAME)
 +
 +    async def recv(self, decode: bool | None = None) -> str | bytes:
-+        upstream: Final = self._upstream_recv or asyncio.create_task(self._inner.recv(decode))
-+        local: Final = asyncio.create_task(self._local_frames.get())
-+        done, _ = await asyncio.wait((upstream, local), return_when=asyncio.FIRST_COMPLETED)
-+        if local in done:
-+            self._upstream_recv = upstream
-+            return local.result()
-+        local.cancel()
-+        self._upstream_recv = None
-+        return upstream.result()
++        frame: Final = await self._frames.get()
++        if isinstance(frame, Exception):
++            raise frame
++        return frame
 +
 +    async def close(self) -> None:
 +        self._stop()
 +        await self._inner.close()
 +
 +    def _stop(self) -> None:
-+        for task in (self._keepalive_task, self._upstream_recv):
-+            if task is not None:
-+                task.cancel()
++        for task in self._tasks:
++            task.cancel()
++
++    async def _pump(self) -> None:
++        while True:
++            try:
++                frame = await self._inner.recv()
++            except Exception as e:
++                await self._frames.put(e)
++                return
++            await self._frames.put(frame)
 +
 +    async def _keepalive(self) -> None:
 +        while not self._ended:
@@ -324,12 +378,22 @@ index 000000000000..38648ad8c579
 +        *,
 +        options: SonioxRealtimeOptions | None = None,
 +        wrap: Callable[[RealtimeBackend], RealtimeBackend] = SonioxRealtimeBackend,
++        clock: Callable[[], float] = time.monotonic,
 +    ) -> None:
 +        self._options: Final = options or SonioxRealtimeOptions()
 +        self._wrap: Final = wrap
++        self._clock: Final = clock
 +        self._transformer: Final = SonioxEventTransformer(translated_only=self._options.translation is not None)
 +        self._start_request: SonioxStartRequest | None = None
 +        self._session_id: str = f"sess_{uuid.uuid4().hex}"
++        self._opened_at: float | None = None
++
++    @classmethod
++    def from_litellm_params(cls, litellm_params: Mapping[str, object]) -> Self:
++        return cls(options=SonioxRealtimeOptions.model_validate(dict(litellm_params)))
++
++    def requires_session_configuration(self) -> bool:
++        return True
 +
 +    def validate_environment(
 +        self,
@@ -346,6 +410,7 @@ index 000000000000..38648ad8c579
 +        return build_soniox_realtime_url(api_base)
 +
 +    def wrap_backend(self, backend: RealtimeBackend) -> RealtimeBackend:
++        self._opened_at = self._clock()
 +        return self._wrap(backend)
 +
 +    def transform_session_created_event(
@@ -377,7 +442,10 @@ index 000000000000..38648ad8c579
 +        return (*self._start(model, None), control_frame)
 +
 +    def unbilled_usage_on_session_close(self, model: str) -> RealtimeInputAudioTranscriptionUsage | None:
-+        return self._transformer.take_unbilled_usage()
++        opened_at: Final = self._opened_at
++        if opened_at is None or self._start_request is None:
++            return self._transformer.take_unbilled_usage()
++        return self._transformer.take_unbilled_usage(int((self._clock() - opened_at) * 1000))
 +
 +    def transform_realtime_response(
 +        self,
@@ -406,9 +474,10 @@ index 000000000000..38648ad8c579
 +        return (_session_created(self._session_id, self._start_request),)
 +
 +    def _start(self, model: str, update: TranscriptionSessionUpdate | None) -> tuple[str, ...]:
-+        if self._start_request is not None:
-+            if update is not None:
-+                verbose_logger.debug("Soniox realtime: ignoring session.update after the stream was configured")
++        started: Final = self._start_request
++        if started is not None:
++            if update is not None and _changes_started_stream(update, started):
++                raise SonioxProtocolError("Soniox realtime can't change the session once the stream has started")
 +            return ()
 +        start_request: Final = build_start_request(model, update, self._options)
 +        self._start_request = start_request
@@ -483,7 +552,7 @@ index 288147418526..e219b09212ba 100644
      if provider_config is not None:
          await base_llm_http_handler.async_realtime(
 diff --git a/litellm/utils.py b/litellm/utils.py
-index a2dac2fcf8db..599170f68ccb 100644
+index a2dac2fcf8db..6bb1d6f16944 100644
 --- a/litellm/utils.py
 +++ b/litellm/utils.py
 @@ -9694,6 +9694,7 @@ class ProviderConfigManager:
@@ -499,9 +568,9 @@ index a2dac2fcf8db..599170f68ccb 100644
  
              return MetaRealtimeConfig()
 +        if LlmProviders.SONIOX == provider:
-+            from litellm.llms.soniox.realtime.transformation import SonioxRealtimeConfig, SonioxRealtimeOptions
++            from litellm.llms.soniox.realtime.transformation import SonioxRealtimeConfig
 +
-+            return SonioxRealtimeConfig(options=SonioxRealtimeOptions.model_validate(dict(litellm_params)))
++            return SonioxRealtimeConfig.from_litellm_params(litellm_params)
          return None
  
      @staticmethod
