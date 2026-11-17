@@ -16,6 +16,10 @@ FROM ${LITELLM_IMAGE}:${LITELLM_VERSION}
 #    image ships prebuilt UI assets, so ui/ source changes are inert anyway).
 # 3. Import the proxy server as a smoke test that the image still boots
 #    without the enterprise code and with the patches applied.
+# 4. Make /app (venv + site-packages) writable by any UID in GID 0, so the
+#    image can run as non-root: litellm restructures its bundled UI under
+#    site-packages at runtime and prisma writes its generated client there.
+#    This is the OpenShift/Lagoon idiom (arbitrary UID, GID 0).
 COPY patch/ /tmp/patch/
 RUN set -e; \
     cd "$(python -c 'import site; print(site.getsitepackages()[0])')"; \
@@ -33,4 +37,11 @@ RUN set -e; \
     fi; \
     rm -rf /tmp/patch; \
     python -c 'import litellm.proxy.proxy_server' \
-        && echo "proxy_server imports OK without enterprise code"
+        && echo "proxy_server imports OK without enterprise code"; \
+    chgrp -R 0 /app && chmod -R g=u /app
+
+# Upstream leaves HOME at /root, which a non-root UID can't write.
+ENV HOME=/app
+# Matches Lagoon's runAsUser. Consumers needing root for their own build
+# steps switch with `USER root` and back.
+USER 10000
